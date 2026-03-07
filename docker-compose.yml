@@ -1,0 +1,367 @@
+services:
+  redis:
+    image: 'redis:alpine'
+    restart: always
+    command: redis-server --maxmemory 2048mb --maxmemory-policy allkeys-lru --appendonly yes --bind redis
+    expose:
+      - '6379'
+    networks:
+      - app-network
+    labels:
+      - com.datadoghq.ad.check_names=["redisdb"]
+      - com.datadoghq.ad.init_configs=[{}]
+      - 'com.datadoghq.ad.instances=[{"host": "%%host%%", "port": 6379, "tags": ["env:production", "service:wordpress-redis"]}]'
+
+  wpcli:
+    image: wordpress:cli
+    volumes_from:
+      - wordpress
+    links:
+      - db:mysql
+    entrypoint: wp
+    env_file: .env
+    command: "--info"
+    environment:
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_USER: $MYSQL_USER
+      WORDPRESS_DB_PASSWORD: $MYSQL_PASSWORD
+      WORDPRESS_DB_NAME: $MYSQL_DATABASE
+      PHP_MEMORY_LIMIT: 512M
+      WORDPRESS_CONFIG_EXTRA: |
+        define('WP_REDIS_HOST', 'redis');
+        define('WP_REDIS_PORT', '6379');
+        define('WP_CACHE', true);
+        define('WP_CACHE_KEY_SALT', 'example.com');
+        define('WP_REDIS_PREFIX', 'example.com');
+        define('WP_REDIS_DATABASE', '0');
+        define('WP_MEMORY_LIMIT', '512M');
+        define('FS_METHOD', 'direct');
+        define('DISABLE_WP_CRON', true);
+    networks:
+      - app-network
+      - db-network
+
+  wordpress:
+    build: .
+    restart: always
+    env_file: .env
+    scale: 2
+    mem_limit: 2g
+    mem_reservation: 1g
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
+    depends_on:
+      - db
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://localhost/health.php"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    expose:
+      - '80'
+      - '8888'
+    environment:
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_USER: $MYSQL_USER
+      WORDPRESS_DB_PASSWORD: $MYSQL_PASSWORD
+      WORDPRESS_DB_NAME: $MYSQL_DATABASE
+      DD_AGENT_HOST: datadog-agent
+      DD_SERVICE: wordpress
+      DD_ENV: production
+      DD_TRACE_ENABLED: "true"
+      DD_PROFILING_ENABLED: "false"
+      DD_APPSEC_ENABLED: "false"
+      DD_TRACE_ANALYTICS_ENABLED: "true"
+      DD_LOGS_INJECTION: "true"
+      WORDPRESS_CONFIG_EXTRA: |
+        define('WP_REDIS_HOST', 'redis');
+        define('WP_REDIS_PORT', '6379');
+        define('WP_CACHE', true);
+        define('WP_CACHE_KEY_SALT', 'example.com');
+        define('WP_REDIS_PREFIX', 'example.com');
+        define('WP_REDIS_DATABASE', '0');
+        define('WP_MEMORY_LIMIT', '1024M');
+        define('FS_METHOD', 'direct');
+        define('IMGPROXY_ENDPOINT', getenv('IMGPROXY_ENDPOINT') ?: 'https://img.example.com');
+        define('IMGPROXY_KEY', getenv('IMGPROXY_KEY') ?: '');
+        define('IMGPROXY_SALT', getenv('IMGPROXY_SALT') ?: '');
+        define('IMGPROXY_BYPASS', filter_var(getenv('IMGPROXY_BYPASS') ?: 'false', FILTER_VALIDATE_BOOLEAN));
+        define('DISABLE_WP_CRON', true);
+    volumes:
+      - wordpress:/var/www/html
+      - ./config/apache/01-static-cache-headers.conf:/etc/apache2/conf-enabled/01-static-cache-headers.conf:ro
+      - ./config/apache/02-server-status.conf:/etc/apache2/conf-enabled/02-server-status.conf:ro
+      - ./config/php/99-opcache.ini:/usr/local/etc/php/conf.d/99-opcache.ini:ro
+      - ./config/health.php:/var/www/html/health.php:ro
+      - ./wp-content/mu-plugins/imgproxy-rewrite.php:/var/www/html/wp-content/mu-plugins/imgproxy-rewrite.php:ro
+      - ./wp-content/mu-plugins/asset-optimizer.php:/var/www/html/wp-content/mu-plugins/asset-optimizer.php:ro
+    networks:
+      - app-network
+      - db-network
+    labels:
+      - docker-volume-backup.stop-during-backup=true
+      - 'traefik.enable=true'
+      - 'traefik.http.routers.wordpress.entrypoints=websecure'
+      - "traefik.http.routers.wordpress.rule=Host(`example.com`) && PathPrefix(`/`)"
+      - "traefik.http.routers.wordpress.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.wordpress.tls.domains[0].main=*.example.com"
+      - "traefik.http.routers.wordpress.tls.domains[0].sans=example.com"
+      - "traefik.http.routers.wordpress-www.entrypoints=websecure"
+      - "traefik.http.routers.wordpress-www.rule=Host(`www.example.com`)"
+      - "traefik.http.routers.wordpress-www.middlewares=redirect-www-to-apex"
+      - "traefik.http.routers.wordpress-www.service=noop@internal"
+      - "traefik.http.routers.wordpress-www.tls.certresolver=letsencrypt"
+      - "traefik.http.middlewares.redirect-www-to-apex.redirectregex.regex=^https://www\\.example\\.com/(.*)"
+      - "traefik.http.middlewares.redirect-www-to-apex.redirectregex.replacement=https://example.com/$${1}"
+      - "traefik.http.middlewares.redirect-www-to-apex.redirectregex.permanent=true"
+      - "traefik.http.services.wordpress.loadbalancer.sticky.cookie=true"
+      - "traefik.http.services.wordpress.loadbalancer.sticky.cookie.name=wp_sticky"
+      # Define middleware
+      - "traefik.http.routers.wordpress.middlewares=real-ip-cf@file,compress@file,wp-maxconn"
+      # Middleware configuration
+      - "traefik.http.middlewares.wp-maxconn.inflightreq.amount=200"
+      - com.datadoghq.ad.check_names=["apache"]
+      - com.datadoghq.ad.init_configs=[{}]
+      - 'com.datadoghq.ad.instances=[{"apache_status_url": "http://%%host_wordpress_app-network%%:8888/server-status?auto", "tags": ["env:production", "service:wordpress"]}]'
+
+  imgproxy:
+    image: ghcr.io/imgproxy/imgproxy:v3
+    restart: always
+    env_file: .env
+    mem_limit: 2g
+    mem_reservation: 1g
+    environment:
+      IMGPROXY_KEY: ${IMGPROXY_KEY}
+      IMGPROXY_SALT: ${IMGPROXY_SALT}
+      IMGPROXY_ALLOWED_SOURCES: ${IMGPROXY_ALLOWED_SOURCES}
+      IMGPROXY_LOCAL_FILESYSTEM_ROOT: /data
+      IMGPROXY_AUTO_WEBP: ${IMGPROXY_AUTO_WEBP:-true}
+      IMGPROXY_AUTO_AVIF: ${IMGPROXY_AUTO_AVIF:-true}
+      IMGPROXY_QUALITY: ${IMGPROXY_QUALITY:-82}
+      IMGPROXY_USE_ETAG: ${IMGPROXY_USE_ETAG:-true}
+      IMGPROXY_MAX_SRC_RESOLUTION: ${IMGPROXY_MAX_SRC_RESOLUTION:-50}
+      IMGPROXY_WORKERS: ${IMGPROXY_WORKERS:-16}
+      IMGPROXY_MAX_CLIENTS: ${IMGPROXY_MAX_CLIENTS:-128}
+      IMGPROXY_REQUESTS_QUEUE_SIZE: ${IMGPROXY_REQUESTS_QUEUE_SIZE:-256}
+      IMGPROXY_TIMEOUT: ${IMGPROXY_TIMEOUT:-60}
+      IMGPROXY_DOWNLOAD_TIMEOUT: ${IMGPROXY_DOWNLOAD_TIMEOUT:-60}
+      IMGPROXY_DATADOG_ENABLE: "true"
+      IMGPROXY_DATADOG_ENABLE_ADDITIONAL_METRICS: "true"
+      DD_AGENT_HOST: datadog-agent
+      DD_SERVICE: imgproxy
+      DD_ENV: production
+    volumes:
+      - wordpress:/data:ro
+    expose:
+      - '8080'
+    networks:
+      - app-network
+    labels:
+      - 'traefik.enable=true'
+      - 'traefik.http.routers.imgproxy.entrypoints=websecure'
+      - "traefik.http.routers.imgproxy.rule=Host(`img.example.com`) && PathPrefix(`/`)"
+      - "traefik.http.routers.imgproxy.tls.certresolver=letsencrypt"
+      - "traefik.http.services.imgproxy.loadbalancer.server.port=8080"
+
+  db:
+    image: mariadb:latest
+    restart: always
+    env_file: .env
+    mem_limit: 4g
+    environment:
+      MYSQL_DATABASE: $MYSQL_DATABASE
+      MYSQL_USER: $MYSQL_USER
+      MYSQL_PASSWORD: $MYSQL_PASSWORD
+      MARIADB_ROOT_PASSWORD: $MYSQL_ROOT_PASSWORD
+      MARIADB_AUTO_UPGRADE: '1'
+    volumes:
+      - db:/var/lib/mysql
+      - ./config/mariadb/conf.d/98-innodb-tuning.cnf:/etc/mysql/conf.d/98-innodb-tuning.cnf:ro
+      - ./config/mariadb/conf.d/99-datadog-performance-schema.cnf:/etc/mysql/conf.d/99-datadog-performance-schema.cnf:ro
+    labels:
+      - docker-volume-backup.stop-during-backup=true
+      - "docker-volume-backup.archive-pre=/bin/sh -c 'mariadb-dump --all-databases -uroot -p\"$$MARIADB_ROOT_PASSWORD\" > /var/lib/mysql/all-databases.sql'"
+      - com.datadoghq.ad.check_names=["mysql"]
+      - com.datadoghq.ad.init_configs=[{}]
+      - 'com.datadoghq.ad.instances=[{"server": "%%host%%", "port": 3306, "username": "datadog", "password": "%%env_DD_MYSQL_DATADOG_PASSWORD%%", "dbm": true}]'
+    networks:
+      - db-network
+
+  reverse-proxy:
+    # The official v3 Traefik docker image
+    image: traefik:v3
+    restart: always
+    env_file: .env-traefik
+    mem_limit: 4g
+    mem_reservation: 2g
+    # Enables the web UI and tells Traefik to listen to docker
+    command:
+      - '--api.insecure=true'
+      - '--providers.docker'
+      - '--providers.docker.exposedbydefault=false'
+      - '--accesslog'
+      - '--accesslog.filepath=/var/log/traefik/access.log'
+      - '--accesslog.bufferingsize=100'
+      - '--accesslog.fields.defaultmode=keep'
+      - '--accesslog.fields.headers.defaultmode=drop'
+      # Datadog metrics (DogStatsD) — sent to datadog-agent service; set DD_AGENT_HOST in .env to override
+      - '--metrics.datadog=true'
+      - '--metrics.datadog.address=${DD_AGENT_HOST:-datadog-agent}:8125'
+      # - '--metrics.otlp'
+      # - '--metrics.otlp.http.endpoint=instance01.local:4318/v1/metrics'
+      - '--entryPoints.web.address=:80'
+      - '--entryPoints.websecure.address=:443'
+      - '--entryPoints.websecure.transport.respondingTimeouts.writeTimeout=60s'
+      - '--entryPoints.websecure.transport.respondingTimeouts.readTimeout=30s'
+      - '--entryPoints.websecure.transport.respondingTimeouts.idleTimeout=90s'
+      # - '--entryPoints.web.forwardedHeaders.trustedIPs=10.0.0.0/8'
+      # - '--entryPoints.websecure.forwardedHeaders.trustedIPs=10.0.0.0/8'
+      - '--certificatesresolvers.letsencrypt.acme.dnschallenge=true'
+      - '--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=cloudflare'
+      - '--certificatesresolvers.letsencrypt.acme.email=${CF_API_EMAIL}'
+      - '--certificatesresolvers.letsencrypt.acme.storage=/data/acme.json'
+      - '--certificatesResolvers.letsencrypt.acme.dnsChallenge.delayBeforeCheck=60'
+      - '--certificatesresolvers.letsencrypt.acme.dnsChallenge.resolvers=1.1.1.1:53,8.8.8.8:53'
+      - '--entryPoints.web.http.redirections.entryPoint.to=websecure'
+      - '--entryPoints.web.http.redirections.entryPoint.scheme=https'
+      # - '--experimental.plugins.crowdsec-bouncer.modulename=github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin'
+      # - '--experimental.plugins.crowdsec-bouncer.version=v1.4.4'
+      - '--experimental.plugins.real-ip.modulename=github.com/Paxxs/traefik-get-real-ip'
+      - '--experimental.plugins.real-ip.version=v1.0.3'
+      # Attach the dynamic configuration file that contains the real-ip middleware
+      - '--providers.file.filename=/etc/traefik/dynamic/real-ip.yaml'
+
+    ports:
+      # The HTTP port
+      - '80:80'
+      - '443:443'
+      # The Web UI (enabled by --api.insecure=true)
+      - '127.0.0.1:8081:8080'
+    volumes:
+      # So that Traefik can listen to the Docker events
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./config/traefik:/etc/traefik/dynamic
+      - ./config/letsencrypt:/data
+      - traefik-logs:/var/log/traefik
+    networks:
+      - app-network
+
+  datadog-agent:
+    image: gcr.io/datadoghq/agent:latest
+    restart: always
+    pid: host
+    env_file: .env
+    environment:
+      - DD_API_KEY=${DD_API_KEY}
+      - DD_SITE=${DD_SITE:-datadoghq.com}
+      - DD_DOGSTATSD_NON_LOCAL_TRAFFIC=true
+      - DD_APM_ENABLED=true
+      - DD_APM_NON_LOCAL_TRAFFIC=true
+      - DD_MYSQL_DATADOG_PASSWORD=${DD_MYSQL_DATADOG_PASSWORD}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc/:/host/proc:ro
+      - /sys/fs/cgroup:/host/sys/fs/cgroup:ro
+      - ./config/datadog/conf.d/apache.d/conf.yaml:/etc/datadog-agent/conf.d/apache.d/conf.yaml:ro
+    labels:
+      - traefik.enable=false
+    networks:
+      - app-network
+      - db-network
+
+  # crowdsec:
+  #   image: crowdsecurity/crowdsec
+  #   restart: always
+  #   environment:
+  #     COLLECTIONS: 'crowdsecurity/nginx'
+  #     GID: 1002
+  #   depends_on:
+  #     - 'reverse-proxy'
+  #   volumes:
+  #     - ./crowdsec/acquis.yaml:/etc/crowdsec/acquis.yaml
+  #     - crowdsec-logs:/var/log/nginx
+  #     - crowdsec-db:/var/lib/crowdsec/data/
+  #     - crowdsec-config:/etc/crowdsec/
+  #     - traefik-logs:/var/log/traefik:ro
+  #   labels:
+  #     - traefik.enable=false
+  #   networks:
+  #     - app-network
+
+  backup:
+    image: offen/docker-volume-backup:v2
+    restart: always
+    env_file: ./backup.env
+    volumes:
+      - wordpress:/backup/wordpress:ro
+      - db:/backup/db:ro
+      - ./config:/backup/host-config/config:ro
+      - ./.env:/backup/host-config/env-wordpress:ro
+      - ./.env-traefik:/backup/host-config/env-traefik:ro
+      - ./wp-content/mu-plugins:/backup/host-config/mu-plugins:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /path/to/local/backups:/archive
+      - ./config/backup-ssh-key:/run/secrets/backup-ssh-key:ro
+    networks:
+      - db-network
+    labels:
+      - traefik.enable=false
+
+  wp-cron:
+    image: wordpress:cli
+    volumes_from:
+      - wordpress
+    links:
+      - db:mysql
+    entrypoint: /bin/sh
+    command: >-
+      -c 'while true; do php -d memory_limit=512M /usr/local/bin/wp cron event run --due-now; sleep 60; done'
+    environment:
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_USER: $MYSQL_USER
+      WORDPRESS_DB_PASSWORD: $MYSQL_PASSWORD
+      WORDPRESS_DB_NAME: $MYSQL_DATABASE
+      PHP_MEMORY_LIMIT: 512M
+      WORDPRESS_CONFIG_EXTRA: |
+        define('WP_REDIS_HOST', 'redis');
+        define('WP_REDIS_PORT', '6379');
+        define('WP_CACHE', true);
+        define('WP_CACHE_KEY_SALT', 'example.com');
+        define('WP_REDIS_PREFIX', 'example.com');
+        define('WP_REDIS_DATABASE', '0');
+        define('DISABLE_WP_CRON', true);
+        define('WP_MEMORY_LIMIT', '512M');
+    depends_on:
+      - wordpress
+    networks:
+      - app-network
+      - db-network
+    restart: always
+
+  # certbot:
+  #   depends_on:
+  #     - webserver
+  #   image: certbot/dns-cloudflare
+  #   container_name: certbot
+  #   volumes:
+  #     - certbot-etc:/etc/letsencrypt
+  #     - wordpress:/var/www/html
+  #   command: certonly --webroot --webroot-path=/var/www/html --email sammy@your_domain --agree-tos --no-eff-email --staging -d your_domain -d www.your_domain
+
+
+volumes:
+  wordpress:
+  certbot-etc:
+  db:
+  traefik-logs:
+  crowdsec-logs:
+  crowdsec-db:
+  crowdsec-config:
+
+networks:
+  app-network:
+    driver: bridge
+  db-network:

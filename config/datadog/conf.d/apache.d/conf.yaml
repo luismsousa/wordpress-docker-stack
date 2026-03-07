@@ -1,0 +1,10 @@
+ad_identifiers:
+  - wordpress
+
+init_config:
+
+instances:
+  - apache_status_url: http://%%host_wordpress_app-network%%:8888/server-status?auto
+    tags:
+      - "env:production"
+      - "service:wordpress"

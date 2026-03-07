@@ -1,0 +1,14 @@
+http:
+  middlewares:
+    real-ip-cf:
+      plugin:
+        real-ip:
+          Proxy:
+            - realIP: Cf-Connecting-Ip
+              OverwriteXFF: true
+    compress:
+      compress:
+        encodings:
+          - br
+          - gzip
+        minResponseBodyBytes: 1024

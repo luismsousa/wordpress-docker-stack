@@ -1,0 +1,6 @@
+# InnoDB buffer pool tuning for 24 GB VPS.
+# Keeps more tables/indexes in RAM, reducing disk I/O.
+# https://mariadb.com/kb/en/innodb-system-variables/#innodb_buffer_pool_size
+
+[mysqld]
+innodb_buffer_pool_size = 2G
