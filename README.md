@@ -91,6 +91,7 @@ This stack is documented in a series of blog posts:
 - [Rank Math Sitemap Not Loading with Traefik](https://blog.nuvai.cloud/posts/rank-math-sitemap-not-loading-traefik/)
 - [Cloudflare www-to-apex Redirects with Terraform](https://blog.nuvai.cloud/posts/cloudflare-www-to-apex-redirects-terraform/)
 - [Automated WordPress Backups to Hetzner with Docker](https://blog.nuvai.cloud/posts/wordpress-docker-automated-backups-hetzner/)
+- [Fixing 'Robots.txt Unreachable' in Google Search Console with Traefik and Docker](https://blog.nuvai.cloud/posts/fixing-robots-txt-unreachable-traefik-docker/)
 
 ## License
 

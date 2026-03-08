@@ -104,6 +104,7 @@ services:
     labels:
       - docker-volume-backup.stop-during-backup=true
       - 'traefik.enable=true'
+      - 'traefik.docker.network=wordpress_app-network'
       - 'traefik.http.routers.wordpress.entrypoints=websecure'
       - "traefik.http.routers.wordpress.rule=Host(`example.com`) && PathPrefix(`/`)"
       - "traefik.http.routers.wordpress.tls.certresolver=letsencrypt"
