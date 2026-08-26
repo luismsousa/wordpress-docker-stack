@@ -129,7 +129,7 @@ services:
       - 'com.datadoghq.ad.instances=[{"apache_status_url": "http://%%host_wordpress_app-network%%:8888/server-status?auto", "tags": ["env:production", "service:wordpress"]}]'
 
   imgproxy:
-    image: ghcr.io/imgproxy/imgproxy:v3
+    image: ghcr.io/imgproxy/imgproxy:v4
     restart: always
     env_file: .env
     mem_limit: 2g
